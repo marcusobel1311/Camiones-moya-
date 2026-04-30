@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { Truck, MOCK_TRUCKS } from '../data/mockData';
 import { supabase } from '../lib/supabase';
 
@@ -36,7 +36,7 @@ interface AppContextType {
   setDrivers: React.Dispatch<React.SetStateAction<DriverInfo[]>>;
   addTrip: (trip: Omit<Trip, 'id'>) => void;
   updateTripTruckType: (tripId: string, truckType: string) => void;
-  assignAndStartTrip: (tripId: string, truckId: string) => void;
+  assignAndStartTrip: (tripId: string, truckId: string, driverId?: string, tripObj?: Trip) => void;
   addDriver: (driver: Omit<DriverInfo, 'id'>) => void;
   removeDriver: (id: string) => void;
   addTruck: (truckData: any) => void;
@@ -50,6 +50,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [trucks, setTrucks] = useState<Truck[]>([]);
   const [drivers, setDrivers] = useState<DriverInfo[]>([]);
   const [trips, setTrips] = useState<Trip[]>([]);
+  const processedTripsRef = useRef<Set<string>>(new Set());
+  const trucksRef = useRef<Truck[]>([]);
+
+  useEffect(() => {
+    trucksRef.current = trucks;
+  }, [trucks]);
 
   // Intentar cargar datos desde Supabase al iniciar
   useEffect(() => {
@@ -69,17 +75,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const { data: dbViajes, error: errorV } = await supabase.from('viajes').select('*');
         if (errorV) throw errorV;
         const mappedTrips: Trip[] = (dbViajes || []).map(v => ({
-          id: v.id,
-          name: v.nombre,
-          startName: v.origen_nombre || 'Origen',
-          endName: v.destino_nombre || 'Destino',
-          startCoords: [v.start_lat, v.start_lng],
-          endCoords: [v.end_lat, v.end_lng],
-          requiredTruckType: v.tipo_camion_requerido || 'Cualquiera',
-          status: v.estado as any,
-          assignedTruckId: v.camion_asignado_id || undefined,
-          startTimeMs: v.inicio_ms ? Number(v.inicio_ms) : undefined,
-          durationMs: v.duracion_ms ? Number(v.duracion_ms) : undefined
+           id: v.id,
+           name: v.nombre,
+           startName: v.origen_nombre || 'Origen',
+           endName: v.destino_nombre || 'Destino',
+           startCoords: [v.start_lat, v.start_lng],
+           endCoords: [v.end_lat, v.end_lng],
+           requiredTruckType: v.tipo_camion_requerido || 'Cualquiera',
+           status: v.estado as any,
+           assignedTruckId: v.camion_asignado_id || undefined,
+           startTimeMs: v.inicio_ms ? Number(v.inicio_ms) : undefined,
+           durationMs: v.duracion_ms ? Number(v.duracion_ms) : undefined
         }));
         setTrips(mappedTrips);
 
@@ -87,38 +93,44 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         if (errorC) throw errorC;
         const mappedTrucks: Truck[] = (dbCamiones || []).map((c: any) => {
           const tRoutes = mappedTrips.filter(t => t.assignedTruckId === c.id).map(t => ({
-            id: t.id,
-            name: t.name,
-            status: t.status
+             id: t.id,
+             name: t.name,
+             status: t.status
           }));
           return {
             id: c.id,
             plate: c.placa,
             status: c.estado,
             location: {
-              lat: c.latitud,
-              lng: c.longitud,
-              address: c.direccion || 'Ubicación Desconocida'
+               lat: c.latitud,
+               lng: c.longitud,
+               address: c.direccion || 'Ubicación Desconocida'
             },
             driver: c.conductores ? {
-              name: c.conductores.nombre,
-              age: c.conductores.edad,
-              license: c.conductores.licencia
+                name: c.conductores.nombre,
+                age: c.conductores.edad,
+                license: c.conductores.licencia,
+                id: c.conductores.id
             } : { name: 'Sin Asignar', age: 0, license: 'N/A' },
             stopDurationMinutes: c.estado === 'stopped' ? 45 : 0,
             fuel: {
-              amountLiters: c.combustible_litros,
-              capacityLiters: c.combustible_capacidad,
-              type: c.combustible_tipo
+               amountLiters: c.combustible_litros,
+               capacityLiters: c.combustible_capacidad,
+               type: c.combustible_tipo
             },
             vehicle: {
-              color: c.color,
-              brand: c.marca,
-              model: c.modelo,
-              year: c.anio,
-              details: c.detalles || ''
+               color: c.color,
+               brand: c.marca,
+               model: c.modelo,
+               year: c.anio,
+               details: c.detalles || ''
             },
-            history: { weekly: 0, biweekly: 0, monthly: 0, total: 0 },
+            history: { 
+               weekly: mappedTrips.filter(t => t.assignedTruckId === c.id && t.status === 'completed' && t.name.startsWith('Semana')).length || Math.floor(mappedTrips.filter(t => t.assignedTruckId === c.id && t.status === 'completed').length * 0.4), 
+               biweekly: Math.floor(mappedTrips.filter(t => t.assignedTruckId === c.id && t.status === 'completed').length * 0.7), 
+               monthly: Math.floor(mappedTrips.filter(t => t.assignedTruckId === c.id && t.status === 'completed').length * 0.9), 
+               total: mappedTrips.filter(t => t.assignedTruckId === c.id && t.status === 'completed').length 
+            },
             maintenance: [],
             routes: tRoutes
           };
@@ -130,7 +142,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setDbStatus('error');
       }
     };
-
+    
     fetchData();
   }, []);
 
@@ -138,35 +150,25 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const interval = setInterval(() => {
       const now = Date.now();
+      const finishingTruckIds: string[] = [];
 
       setTrucks(prevTrucks => {
         return prevTrucks.map(truck => {
-          // Find the active trip for this truck
+          if (truck.status !== 'active') return truck;
           const activeTrip = trips.find(t => t.assignedTruckId === truck.id && t.status === 'in-progress');
           if (activeTrip && activeTrip.startTimeMs && activeTrip.durationMs) {
-            // Aceleramos la simulación 120 veces (1 hora de viaje en la vida real se completará en 30 segundos en la pantalla)
             const SIMULATION_SPEED = 120;
             const elapsed = (now - activeTrip.startTimeMs) * SIMULATION_SPEED;
-            let progress = elapsed / activeTrip.durationMs;
-
-            if (progress >= 1) {
-              progress = 1;
-              // Mark trip completed and free the truck
-              setTimeout(() => {
-                setTrips(curr => curr.map(t => t.id === activeTrip.id ? { ...t, status: 'completed' } : t));
-                setTrucks(curr => curr.map(tk => tk.id === truck.id ? { ...tk, status: 'stopped' } : tk));
-
-                // Update Supabase silently
-                supabase.from('viajes').update({ estado: 'completed' }).eq('id', activeTrip.id).then();
-                supabase.from('camiones').update({ estado: 'stopped' }).eq('id', truck.id).then();
-              }, 0);
+            let progress = Math.min(1, elapsed / activeTrip.durationMs);
+            
+            if (progress >= 1 && !processedTripsRef.current.has(activeTrip.id)) {
+              finishingTruckIds.push(truck.id);
             }
 
             let lat = truck.location.lat;
             let lng = truck.location.lng;
 
             if (activeTrip.routePath && activeTrip.routePath.length > 0) {
-              // Interpolate along route array
               const path = activeTrip.routePath;
               const index = progress * (path.length - 1);
               const lower = Math.floor(index);
@@ -175,18 +177,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               lat = path[lower][0] + (path[upper][0] - path[lower][0]) * fraction;
               lng = path[lower][1] + (path[upper][1] - path[lower][1]) * fraction;
             } else {
-              // Linear interpolation
               lat = activeTrip.startCoords[0] + (activeTrip.endCoords[0] - activeTrip.startCoords[0]) * progress;
               lng = activeTrip.startCoords[1] + (activeTrip.endCoords[1] - activeTrip.startCoords[1]) * progress;
             }
 
-            // Consumo: 35 litros por 100km aprox.
             let currentFuel = truck.fuel.amountLiters;
             if (activeTrip.distanceKm && activeTrip.initialFuel !== undefined) {
-              const totalFuelNeeded = (activeTrip.distanceKm / 100) * 35;
-              currentFuel = Math.max(0, activeTrip.initialFuel - (totalFuelNeeded * progress));
+               const totalFuelNeeded = (activeTrip.distanceKm / 100) * 35;
+               currentFuel = Math.max(0, activeTrip.initialFuel - (totalFuelNeeded * progress));
             }
-
+            
             return {
               ...truck,
               location: { ...truck.location, lat, lng },
@@ -195,6 +195,74 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           }
           return truck;
         });
+      });
+
+      finishingTruckIds.forEach(tId => {
+        const truck = trucksRef.current.find(t => t.id === tId);
+        const activeTrip = trips.find(tr => tr.assignedTruckId === tId && tr.status === 'in-progress');
+        if (truck && activeTrip) {
+          processedTripsRef.current.add(activeTrip.id);
+          
+          // Execute completion actions
+          setTrips(curr => curr.map(t => t.id === activeTrip.id ? { ...t, status: 'completed' } : t));
+          setTrucks(curr => curr.map(tk => {
+            if (tk.id === tId) {
+              const h = tk.history || { weekly: 0, biweekly: 0, monthly: 0, total: 0 };
+              const BASE_COORDS: [number, number] = [10.4806, -66.9036];
+              const arrivedAtBase = Math.sqrt(Math.pow(activeTrip.endCoords[0] - BASE_COORDS[0], 2) + Math.pow(activeTrip.endCoords[1] - BASE_COORDS[1], 2)) < 0.005;
+              
+              return { 
+                ...tk, 
+                status: 'stopped',
+                location: {
+                  ...tk.location,
+                  address: arrivedAtBase ? 'Base Principal' : tk.location.address
+                },
+                history: {
+                  total: (h.total || 0) + 1,
+                  weekly: (h.weekly || 0) + 1,
+                  biweekly: (h.biweekly || 0) + 1,
+                  monthly: (h.monthly || 0) + 1
+                }
+              };
+            }
+            return tk;
+          }));
+
+          const BASE_COORDS: [number, number] = [10.4806, -66.9036];
+          const arrivedAtBase = Math.sqrt(Math.pow(activeTrip.endCoords[0] - BASE_COORDS[0], 2) + Math.pow(activeTrip.endCoords[1] - BASE_COORDS[1], 2)) < 0.005;
+
+          if (activeTrip.id.length > 20) {
+            supabase.from('viajes').update({ estado: 'completed' }).eq('id', activeTrip.id).then();
+          }
+          supabase.from('camiones').update({ 
+            estado: 'stopped',
+            direccion: arrivedAtBase ? 'Base Principal' : truck.location.address 
+          }).eq('id', tId).then();
+
+          // Auto return logic
+          const BASE_COORDS_ARR: [number, number] = [10.4806, -66.9036];
+          // Verificamos si el viaje que acaba de terminar NO era ya hacia la base
+          const arrivedAtBaseStrict = Math.sqrt(Math.pow(activeTrip.endCoords[0] - BASE_COORDS_ARR[0], 2) + Math.pow(activeTrip.endCoords[1] - BASE_COORDS_ARR[1], 2)) < 0.001;
+          
+          if (!arrivedAtBaseStrict) {
+            setTimeout(() => {
+              const returnTripId = `LOCAL-RTN-${Date.now()}`;
+              const returnTrip: Trip = {
+                id: returnTripId,
+                name: `Retorno: ${truck.plate} a Base`,
+                startName: 'Destino',
+                endName: 'Base Central',
+                startCoords: [truck.location.lat, truck.location.lng],
+                endCoords: BASE_COORDS_ARR,
+                requiredTruckType: 'Cualquiera',
+                status: 'pending'
+              };
+              setTrips(prev => [...prev, returnTrip]);
+              assignAndStartTrip(returnTripId, truck.id, truck.driver?.id, returnTrip);
+            }, 3000);
+          }
+        }
       });
     }, 1000); // update every second
 
@@ -224,7 +292,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const newTrip = { ...trip, id: data[0].id };
         setTrips(prev => [...prev, newTrip]);
       }
-    } catch (err) {
+    } catch(err) {
       console.error("Excepción al insertar viaje:", err);
     }
   };
@@ -233,13 +301,26 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setTrips(prev => prev.map(t => t.id === tripId ? { ...t, requiredTruckType: truckType } : t));
   };
 
-  const assignAndStartTrip = async (tripId: string, truckId: string) => {
-    const trip = trips.find(t => t.id === tripId);
-    if (!trip) return;
+  const assignAndStartTrip = async (tripId: string, truckId: string, driverId?: string, tripObj?: Trip) => {
+    const trip = tripObj || trips.find(t => t.id === tripId);
+    if(!trip) return;
     const truck = trucks.find(t => t.id === truckId);
+    
+    // Si se pasa un driverId, buscamos la info del conductor para actualizar el camión
+    let driverInfo = truck?.driver;
+    if (driverId) {
+      const foundDriver = drivers.find(d => d.id === driverId);
+      if (foundDriver) {
+        driverInfo = {
+          name: foundDriver.name,
+          age: foundDriver.age,
+          license: foundDriver.license
+        };
+      }
+    }
 
     let routePath: [number, number][] | undefined;
-    let distanceKm = Math.sqrt(Math.pow(trip.endCoords[0] - trip.startCoords[0], 2) + Math.pow(trip.endCoords[1] - trip.startCoords[1], 2)) * 111;
+    let distanceKm = Math.sqrt(Math.pow(trip.endCoords[0]-trip.startCoords[0],2) + Math.pow(trip.endCoords[1]-trip.startCoords[1],2)) * 111;
 
     try {
       // Usamos OSRM para trazar ruta por calle (Llng, Lat por API)
@@ -250,15 +331,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         routePath = data.routes[0].geometry.coordinates.map((c: any[]) => [c[1], c[0]]);
         distanceKm = data.routes[0].distance / 1000;
       }
-    } catch (e) {
+    } catch(e) {
       console.warn("Fallo ruta OSRM, usando línea recta", e);
     }
-
+    
     const durationHours = distanceKm / 60; // 60 km/h avg
     const durationMs = durationHours * 60 * 60 * 1000;
     const now = Date.now();
     const initialFuel = truck?.fuel.amountLiters || 0;
-
+    
     setTrips(prev => prev.map(t => t.id === tripId ? {
       ...t,
       status: 'in-progress',
@@ -270,18 +351,28 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       initialFuel: initialFuel
     } : t));
 
-    setTrucks(prev => prev.map(tk => tk.id === truckId ? { ...tk, status: 'active' } : tk));
-
+    setTrucks(prev => prev.map(tk => tk.id === truckId ? { 
+      ...tk, 
+      status: 'active',
+      driver: driverInfo || tk.driver 
+    } : tk));
+    
     try {
-      await supabase.from('viajes').update({
-        camion_asignado_id: truckId,
-        estado: 'in-progress',
-        inicio_ms: now,
-        duracion_ms: durationMs
-      }).eq('id', tripId);
-
-      await supabase.from('camiones').update({ estado: 'active' }).eq('id', truckId);
-    } catch (err) { /* ignore */ }
+      // Solo actualizar Supabase si el ID NO es local (viajes de retorno automáticos no se guardan en la DB)
+      if (!tripId.startsWith('LOCAL-')) {
+        await supabase.from('viajes').update({ 
+          camion_asignado_id: truckId, 
+          estado: 'in-progress',
+          inicio_ms: now,
+          duracion_ms: durationMs
+        }).eq('id', tripId);
+      }
+      
+      const updateData: any = { estado: 'active' };
+      if (driverId) updateData.conductor_id = driverId;
+      
+      await supabase.from('camiones').update(updateData).eq('id', truckId);
+    } catch(err) { /* ignore */ }
   };
 
   const addDriver = async (driver: Omit<DriverInfo, 'id'>) => {
@@ -297,7 +388,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         console.error("Error al insertar conductor:", error);
         return;
       }
-
+      
       if (data && data[0]) {
         setDrivers(prev => [...prev, {
           id: data[0].id,
@@ -306,7 +397,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           license: data[0].licencia
         }]);
       }
-    } catch (err: any) {
+    } catch(err: any) {
       alert("Excepción al insertar conductor: " + err.message);
       console.error("Excepción al insertar conductor:", err);
     }
@@ -316,13 +407,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setDrivers(prev => prev.filter(d => d.id !== id));
     try {
       await supabase.from('conductores').delete().eq('id', id);
-    } catch (err) { /* ignore */ }
+    } catch(err) { /* ignore */ }
   };
 
   const addTruck = async (truckData: any) => {
     let assignedDriver = { name: 'Sin Asignar', age: 0, license: 'N/A' };
     let conductorId = null;
-
+    
     if (truckData.driverId) {
       const foundDriver = drivers.find(d => d.id === truckData.driverId);
       if (foundDriver) {
@@ -364,9 +455,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           driver: assignedDriver,
           stopDurationMinutes: 0,
           fuel: { amountLiters: truckData.fuelCapacity, capacityLiters: truckData.fuelCapacity, type: truckData.fuelType },
-          vehicle: {
-            color: truckData.color, brand: truckData.brand, model: truckData.model,
-            year: truckData.year, details: truckData.details
+          vehicle: { 
+            color: truckData.color, brand: truckData.brand, model: truckData.model, 
+            year: truckData.year, details: truckData.details 
           },
           history: { weekly: 0, biweekly: 0, monthly: 0, total: 0 },
           maintenance: [],
@@ -374,7 +465,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         };
         setTrucks(prev => [...prev, newTruck]);
       }
-    } catch (err: any) {
+    } catch(err: any) {
       alert("Excepción al insertar camión: " + err.message);
       console.error("Excepción al insertar camión:", err);
     }
@@ -384,7 +475,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setTrucks(prev => prev.filter(t => t.id !== id));
     try {
       await supabase.from('camiones').delete().eq('id', id);
-    } catch (err) { /* ignore */ }
+    } catch(err) { /* ignore */ }
   };
 
   return (
