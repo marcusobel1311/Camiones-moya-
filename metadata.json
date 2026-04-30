@@ -1,0 +1,6 @@
+{
+  "name": "Alexander Moya Fleet Tracker",
+  "description": "Sistema para la ubicación en tiempo real de una flota de camiones para la Empresa Alexander Moya. Incluye rastreo GPS, información de conductores, alertas de detención, historial de viajes y validación por códigos hexadecimales.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
